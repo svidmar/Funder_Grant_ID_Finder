@@ -12,41 +12,49 @@ def search_funders(query):
         return []
     return response.json().get("results", [])
 
-def fetch_grant_ids_for_funder(funder_id):
-    """Fetch grant IDs associated with a specific funder from OpenAlex."""
+def fetch_grant_ids_for_funder(funder_id, funder_name):
+    """Fetch grant IDs where the selected funder is listed among any of the funders (exact name match)."""
     url = f"https://api.openalex.org/works?filter=grants.funder:{funder_id}&per-page=100&cursor=*"
     grant_ids = set()
-    progress_bar = st.progress(0)
-    status_text = st.empty()
     total_count = 0
     retrieved_count = 0
-    batch_size = 100  # Assuming per-page=100 in the API call
+    batch_size = 100
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
     while url:
         response = requests.get(url)
         if response.status_code != 200:
             st.error("Failed to fetch grant IDs from OpenAlex.")
             return []
-        
+
         data = response.json()
         results = data.get("results", [])
         total_count = data.get("meta", {}).get("count", 0)
         retrieved_count += len(results)
-        
+
         for work in results:
             for grant in work.get("grants", []):
-                if grant.get("award_id"):
-                    grant_ids.add(grant["award_id"])
-        
-        progress_bar.progress(min(retrieved_count / max(total_count, 1), 1.0))
+                award_id = grant.get("award_id", "")
+                funder_display = grant.get("funder_display_name", "")
+                if award_id and funder_display == funder_name:
+                    grant_ids.add(award_id)
+
+        progress = min(retrieved_count / max(total_count, 1), 1.0)
+        progress_bar.progress(progress)
         status_text.text(f"Fetching grants... {retrieved_count}/{total_count}")
-        
+
         cursor = data.get("meta", {}).get("next_cursor")
         url = f"https://api.openalex.org/works?filter=grants.funder:{funder_id}&per-page={batch_size}&cursor={cursor}" if cursor else None
         time.sleep(1 / 10)
-    
+
     progress_bar.empty()
     status_text.text("Fetching complete.")
+
+    if not grant_ids:
+        st.warning("No grant IDs found")
+
     return list(grant_ids)
 
 def main():
@@ -82,24 +90,19 @@ def main():
     """)
 
     query = st.text_input("Search for a funder")
-    
     if query:
         funders = search_funders(query)
         if funders:
-            selected_funder = st.selectbox("Select a funder", [f["display_name"] for f in funders])
-            funder_id = next(f["id"] for f in funders if f["display_name"] == selected_funder)
-            
-            if st.button("Find Grant IDs"):
-                grant_ids = fetch_grant_ids_for_funder(funder_id)
-                if grant_ids:
-                    st.write("### Grant IDs Found:")
-                    df = pd.DataFrame(grant_ids, columns=["Grant ID"])
-                    st.dataframe(df)
-                    
-                    csv = df.to_csv(index=False).encode("utf-8")
-                    st.download_button("Download Grant IDs as CSV", data=csv, file_name="grant_ids.csv", mime="text/csv")
-                else:
-                    st.write("No grant IDs found for this funder.")
+            selected = st.selectbox("Select a funder", funders, format_func=lambda f: f["display_name"])
+            if selected:
+                funder_id = selected["id"].split("/")[-1]
+                funder_name = selected["display_name"]
+                if st.button("Fetch Grant IDs"):
+                    grant_ids = fetch_grant_ids_for_funder(funder_id, funder_name)
+                    if grant_ids:
+                        df = pd.DataFrame({"Grant ID": list(grant_ids)})
+                        st.dataframe(df)
+                        st.download_button("Download CSV", df.to_csv(index=False), "grant_ids.csv")
 
 if __name__ == "__main__":
     main()
